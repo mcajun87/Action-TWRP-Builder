@@ -1,4 +1,4 @@
-name: 构建Recovery(d1x-Samsung Note10 5G)
+name:构建 Recovery (d1x - Samsung Note10 5G)
 
 on:
   workflow_dispatch:
