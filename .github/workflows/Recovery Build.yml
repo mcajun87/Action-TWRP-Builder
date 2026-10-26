@@ -89,7 +89,7 @@ jobs:
       - name: Maximize Free Disk Space
         shell: bash
         run: |
-          echo "=== 正在清除 Runner 无用软件，释放 30GB+ 磁盘空间 ==="
+          echo "=== 正在清理服务器无用软件，释放 30GB+ 磁盘空间 ==="
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
