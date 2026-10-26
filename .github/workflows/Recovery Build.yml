@@ -18,7 +18,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: 'd1x 设备树分支'
         required: true
-        default: 'fox_16.0'
+        default: 'crdroid-17.0'
       DEVICE_PATH:
         description: '设备树在源码中的存放路径'
         required: true
@@ -27,6 +27,10 @@ on:
         description: 'Exynos9820 通用设备树地址'
         required: true
         default: 'https://github.com/mcajun87/Rocky7842_android_device_samsung_exynos9820-common'
+      COMMON_TREE_BRANCH:
+        description: '通用设备树分支'
+        required: true
+        default: 'lineage-24.0'
       COMMON_PATH:
         description: '通用设备树存放路径'
         required: true
@@ -38,7 +42,7 @@ on:
       MAKEFILE_NAME:
         description: 'Lunch 目标的 Makefile 前缀'
         required: true
-        default: 'twrp_d1x-bp2a'
+        default: 'twrp_d1x'
       BUILD_TARGET:
         description: '编译目标文件类型'
         required: true
@@ -61,6 +65,7 @@ jobs:
         echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
         echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
         echo "Common Tree URL: ${{ github.event.inputs.COMMON_TREE_URL }}"
+        echo "Common Tree Branch: ${{ github.event.inputs.COMMON_TREE_BRANCH }}"
         echo "Common Path: ${{ github.event.inputs.COMMON_PATH }}"
         echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
         echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
@@ -131,13 +136,15 @@ jobs:
         && github.event.inputs.COMMON_PATH != ''
       run: |
         mkdir -p ./${{ github.event.inputs.COMMON_PATH }}
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b lineage-22.1 ./${{ github.event.inputs.COMMON_PATH }} || git clone ${{ github.event.inputs.COMMON_TREE_URL }} ./${{ github.event.inputs.COMMON_PATH }}
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.COMMON_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }} || git clone ${{ github.event.inputs.COMMON_TREE_URL }} ./${{ github.event.inputs.COMMON_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Sync Device Dependencies
       run: |
         DEP_FILE=""
-        for candidate in           "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies"           "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies"; do
+        for candidate in \
+          "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" \
+          "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies"; do
           if [ -f "${candidate}" ]; then
             DEP_FILE="${candidate}"
             break
@@ -155,14 +162,21 @@ jobs:
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       continue-on-error: true
 
-    - name: Build Recovery
+    - name: Clean Conflicting Devices and Build Recovery
       run: |
+        # 1. 强制清除冲突的其他机型 vendorsetup (如 xiaomi 等)
+        find device/ -maxdepth 2 -mindepth 2 -not -path "device/samsung*" -exec rm -rf {} + || true
+        
+        # 2. 载入环境
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         export FOX_BUILD_DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
         export LC_ALL=C
         
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng
+        # 3. 尝试匹配正确的 lunch 目标
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng || lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
+        
+        # 4. 开始编译
         mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
@@ -188,8 +202,8 @@ jobs:
         body: |
           ### Build Output
           * Device: Samsung Galaxy Note10 5G (d1x)
-          * Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          * Main Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+          * Common Tree Branch: ${{ github.event.inputs.COMMON_TREE_BRANCH }}
           * Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-          * Package: recovery.tar (For Samsung Odin)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
