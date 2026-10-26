@@ -6,6 +6,7 @@ on:
       DEVICE_TREE_URL:
         description: "Git URL of your d1x device tree that is compatible with OrangeFox 16.0"
         required: true
+        default: "https://github.com/mcajun87/Rocky7842_android_device_samsung_d1x"
         type: string
       DEVICE_TREE_BRANCH:
         description: "Device-tree branch (must exist in the repository)"
@@ -54,7 +55,7 @@ on:
       MAKE_RECOVERY_TAR:
         description: "Also package recovery.img into a Samsung Odin TAR (does not validate flashability)"
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -66,8 +67,6 @@ concurrency:
 
 jobs:
   build:
-    # Retain the original workflow's safeguard against building from a forked
-    # repository on behalf of someone other than its owner.
     if: github.repository_owner == github.actor
     runs-on: ubuntu-22.04
     timeout-minutes: 360
@@ -86,6 +85,20 @@ jobs:
     steps:
       - name: Checkout workflow repository
         uses: actions/checkout@v4
+
+      - name: Maximize Free Disk Space
+        shell: bash
+        run: |
+          echo "=== 正在清除 Runner 无用软件，释放 30GB+ 磁盘空间 ==="
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/powershell
+          sudo docker image prune --all --force || true
+          df -h
 
       - name: Show selected configuration
         shell: bash
@@ -113,7 +126,6 @@ jobs:
           sudo apt-get install -y git git-lfs curl ca-certificates python3 rsync build-essential bc bison flex libssl-dev libncurses5-dev zlib1g-dev
           git lfs install
           echo "Build environment setup completed successfully."
-      
 
       - name: Install repo tool
         shell: bash
@@ -144,27 +156,20 @@ jobs:
           SRC="${FOX_ROOT}/fox_${FOX_BRANCH}"
           mkdir -p "$(dirname "${SRC}/${DEVICE_PATH}")"
 
-          # Fail early if the requested branch is not present.
           git ls-remote --exit-code --heads "${DEVICE_TREE_URL}" "${DEVICE_TREE_BRANCH}" >/dev/null
 
           if [ -e "${SRC}/${DEVICE_PATH}" ]; then
             echo "ERROR: ${DEVICE_PATH} already exists in the synced manifest."
-            echo "Do not overwrite a manifest-provided device tree blindly."
             exit 1
           fi
 
-          git clone --depth=1 --single-branch --branch "${DEVICE_TREE_BRANCH}" \
-            "${DEVICE_TREE_URL}" "${SRC}/${DEVICE_PATH}"
+          git clone --depth=1 --single-branch --branch "${DEVICE_TREE_BRANCH}"             "${DEVICE_TREE_URL}" "${SRC}/${DEVICE_PATH}"
 
           echo "Device-tree commit:"
           git -C "${SRC}/${DEVICE_PATH}" rev-parse HEAD
 
-          # The tree must define the product used below.
-          if ! find "${SRC}/${DEVICE_PATH}" -maxdepth 2 \
-              \( -name "twrp_${DEVICE_NAME}.mk" -o -name "twrp_${DEVICE_NAME}-*.mk" \) \
-              -print -quit | grep -q .; then
+          if ! find "${SRC}/${DEVICE_PATH}" -maxdepth 2               \( -name "twrp_${DEVICE_NAME}.mk" -o -name "twrp_${DEVICE_NAME}-*.mk" \)               -print -quit | grep -q .; then
             echo "ERROR: no twrp_${DEVICE_NAME}.mk or twrp_${DEVICE_NAME}-*.mk found."
-            echo "Check DEVICE_NAME and DEVICE_PATH; do not continue with a guessed lunch target."
             exit 1
           fi
 
@@ -175,9 +180,7 @@ jobs:
         run: |
           set -euo pipefail
           DEP_FILE=""
-          for candidate in \
-            "${DEVICE_PATH}/twrp.dependencies" \
-            "${DEVICE_PATH}/omni.dependencies"; do
+          for candidate in             "${DEVICE_PATH}/twrp.dependencies"             "${DEVICE_PATH}/omni.dependencies"; do
             if [ -f "${candidate}" ]; then
               DEP_FILE="${candidate}"
               break
@@ -207,7 +210,6 @@ jobs:
           echo "Using lunch target: ${LUNCH_TARGET}"
           lunch "${LUNCH_TARGET}"
 
-          # OrangeFox 14.1/16.0 build recipes use adbd plus the selected image target.
           mka adbd "${BUILD_TARGET}image" -j"${MAKE_JOBS}"
 
       - name: Verify output and calculate checksum
@@ -219,13 +221,9 @@ jobs:
           OUT_DIR="out/target/product/${DEVICE_NAME}"
           test -d "${OUT_DIR}"
 
-          # OrangeFox image naming varies between device trees, so collect both
-          # the conventional target image and any OrangeFox-named images.
           mkdir -p "${GITHUB_WORKSPACE}/release-files"
           FOUND=0
-          for f in \
-            "${OUT_DIR}/${BUILD_TARGET}.img" \
-            "${OUT_DIR}"/OrangeFox*.img; do
+          for f in             "${OUT_DIR}/${BUILD_TARGET}.img"             "${OUT_DIR}"/OrangeFox*.img; do
             if [ -f "${f}" ]; then
               cp -v "${f}" "${GITHUB_WORKSPACE}/release-files/"
               FOUND=1
@@ -233,12 +231,12 @@ jobs:
           done
           if [ "${FOUND}" -ne 1 ]; then
             echo "ERROR: no recovery image was found in ${OUT_DIR}"
-            find "${OUT_DIR}" -maxdepth 2 -type f -printf '%p (%s bytes)\n' || true
+            find "${OUT_DIR}" -maxdepth 2 -type f -printf '%p (%s bytes)
+' || true
             exit 1
           fi
 
-          find "${GITHUB_WORKSPACE}/release-files" -maxdepth 1 -type f -print0 \
-            | xargs -0 sha256sum | tee "${GITHUB_WORKSPACE}/release-files/SHA256SUMS.txt"
+          find "${GITHUB_WORKSPACE}/release-files" -maxdepth 1 -type f -print0             | xargs -0 sha256sum | tee "${GITHUB_WORKSPACE}/release-files/SHA256SUMS.txt"
 
           echo "out_dir=${OUT_DIR}" >> "${GITHUB_OUTPUT}"
 
@@ -260,8 +258,6 @@ jobs:
             exit 1
           fi
 
-          # This creates a TAR container only. It does NOT validate Samsung
-          # header, AVB, DTBO, partition size, or bootability.
           tar -H ustar -cf "${GITHUB_WORKSPACE}/release-files/recovery.tar" -C "${OUT_DIR}" recovery.img
 
       - name: Upload build artifacts
@@ -286,11 +282,5 @@ jobs:
             Device path: ${{ inputs.DEVICE_PATH }}
             Lunch configuration: twrp_${{ inputs.DEVICE_NAME }}-${{ inputs.RELEASE_NAME }}-eng
             Build target: ${{ inputs.BUILD_TARGET }}image
-
-            IMPORTANT:
-            - A successful compile does not prove the image boots or is safe to flash.
-            - Verify the image header, DTBO, AVB/footer, partition size, ramdisk contents,
-              and test on the exact device/firmware before flashing.
-            - recovery.tar, if present, is only a TAR archive and is not a verified Odin package.
           files: release-files/*
           fail_on_unmatched_files: true
