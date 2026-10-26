@@ -1,0 +1,195 @@
+name: 构建 Recovery (d1x - Samsung Note10 5G)
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_URL:
+        description: 'OrangeFox 源码 Manifest 地址'
+        required: true
+        default: 'https://gitlab.com/OrangeFox/manifest'
+      MANIFEST_BRANCH:
+        description: 'OrangeFox Manifest 分支'
+        required: true
+        default: '16.0'
+      DEVICE_TREE_URL:
+        description: 'd1x 设备树地址'
+        required: true
+        default: 'https://github.com/mcajun87/Rocky7842_android_device_samsung_d1x'
+      DEVICE_TREE_BRANCH:
+        description: 'd1x 设备树分支'
+        required: true
+        default: 'fox_16.0'
+      DEVICE_PATH:
+        description: '设备树在源码中的存放路径'
+        required: true
+        default: 'device/samsung/d1x'
+      COMMON_TREE_URL:
+        description: 'Exynos9820 通用设备树地址'
+        required: true
+        default: 'https://github.com/mcajun87/Rocky7842_android_device_samsung_exynos9820-common'
+      COMMON_PATH:
+        description: '通用设备树存放路径'
+        required: true
+        default: 'device/samsung/exynos9820-common'
+      DEVICE_NAME:
+        description: '设备代号 (Codename)'
+        required: true
+        default: 'd1x'
+      MAKEFILE_NAME:
+        description: 'Lunch 目标的 Makefile 前缀'
+        required: true
+        default: 'twrp_d1x-bp2a'
+      BUILD_TARGET:
+        description: '编译目标文件类型'
+        required: true
+        default: 'recovery'
+
+jobs:
+  build:
+    if: github.repository_owner == github.actor
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+    - name: Display Run Parameters
+      run: |
+        echo "::group::User Parameters"
+        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
+        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
+        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Common Tree URL: ${{ github.event.inputs.COMMON_TREE_URL }}"
+        echo "Common Path: ${{ github.event.inputs.COMMON_PATH }}"
+        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "::endgroup::"
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Maximize Free Disk Space
+      run: |
+        echo "=== 清理无用软件，释放 30GB+ 磁盘空间 ==="
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/share/swift
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/powershell
+        sudo docker image prune --all --force || true
+        df -h
+
+    - name: Prepare build environment
+      run: |
+        sudo apt update
+        sudo apt install -y git git-lfs curl ca-certificates python3 rsync build-essential bc bison flex libssl-dev libncurses5-dev zlib1g-dev python-is-python3
+        git lfs install
+
+    - name: Setup OpenJDK 11
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'zulu'
+        java-version: '11'
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 24
+
+    - name: Install repo tool
+      run: |
+        mkdir -p ~/bin
+        curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        sudo ln -sf ~/bin/repo /usr/bin/repo
+
+    - name: Initialize and Sync OrangeFox Source
+      run: |
+        mkdir -p workspace
+        cd workspace
+        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        git clone --depth=1 https://gitlab.com/OrangeFox/sync.git sync_tool
+        ./sync_tool/orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ./
+      id: pwd
+
+    - name: Clone Device Tree
+      run: |
+        mkdir -p ./${{ github.event.inputs.DEVICE_PATH }}
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Clone Common Tree
+      if: |
+        github.event.inputs.COMMON_TREE_URL != ''
+        && github.event.inputs.COMMON_PATH != ''
+      run: |
+        mkdir -p ./${{ github.event.inputs.COMMON_PATH }}
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b lineage-22.1 ./${{ github.event.inputs.COMMON_PATH }} || git clone ${{ github.event.inputs.COMMON_TREE_URL }} ./${{ github.event.inputs.COMMON_PATH }}
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Sync Device Dependencies
+      run: |
+        DEP_FILE=""
+        for candidate in           "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies"           "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies"; do
+          if [ -f "${candidate}" ]; then
+            DEP_FILE="${candidate}"
+            break
+          fi
+        done
+
+        if [ -n "${DEP_FILE}" ]; then
+          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
+            bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "${DEP_FILE}" || true
+          fi
+          repo sync -j$(nproc --all) --force-sync
+        else
+          echo "No dependencies file found."
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+      continue-on-error: true
+
+    - name: Build Recovery
+      run: |
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        export FOX_BUILD_DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+        export LC_ALL=C
+        
+        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng
+        mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Create Samsung Odin TAR
+      run: |
+        OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+        if [ -f "${OUT_DIR}/recovery.img" ]; then
+          tar -H ustar -cf "${OUT_DIR}/recovery.tar" -C "${OUT_DIR}" recovery.img
+          echo "recovery.tar created."
+        fi
+      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+    - name: Publish Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: | 
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.tar
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/OrangeFox*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/OrangeFox*.img
+        name: OrangeFox-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          ### Build Output
+          * Device: Samsung Galaxy Note10 5G (d1x)
+          * Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          * Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          * Package: recovery.tar (For Samsung Odin)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
