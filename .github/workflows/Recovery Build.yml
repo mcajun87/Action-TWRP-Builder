@@ -40,9 +40,9 @@ on:
         required: true
         default: 'd1x'
       MAKEFILE_NAME:
-        description: 'Lunch 目标的 Makefile 前缀'
-        required: true
-        default: 'twrp_d1x'
+        description: 'Lunch 目标的 Makefile 前缀 (可留空自动识别)'
+        required: false
+        default: ''
       BUILD_TARGET:
         description: '编译目标文件类型'
         required: true
@@ -138,7 +138,7 @@ jobs:
         
         echo "=== 开始同步源码 (带自动重试机制) ==="
         for i in {1..3}; do
-          echo "第 $次 同步尝试..."
+          echo "第 $i 次 同步尝试..."
           if repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags; then
             echo "源码同步成功！"
             break
@@ -148,7 +148,6 @@ jobs:
           fi
         done
         
-        # 严格检查核心文件是否存在
         if [ ! -f "build/envsetup.sh" ]; then
           echo "ERROR: 多次同步后仍未找到 build/envsetup.sh，同步彻底失败！"
           exit 1
@@ -173,14 +172,14 @@ jobs:
         DEP_FILE=""
         for candidate in "$DEVICE_PATH/twrp.dependencies" "$DEVICE_PATH/omni.dependencies"; do
           if [ -f "$candidate" ]; then
-            DEP_FILE="$candidate"
+            DEP_FILE="${candidate}"
             break
           fi
         done
 
-        if [ -n "$DEP_FILE" ]; then
-          if [ -f "$GITHUB_WORKSPACE/scripts/convert.sh" ]; then
-            bash "$GITHUB_WORKSPACE/scripts/convert.sh" "$DEP_FILE" || true
+        if [ -n "${DEP_FILE}" ]; then
+          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
+            bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "${DEP_FILE}" || true
           fi
           repo sync -j$(nproc --all) --force-sync
         else
@@ -198,7 +197,33 @@ jobs:
         export FOX_BUILD_DEVICE="$DEVICE_NAME"
         export LC_ALL=C
         
-        lunch "$MAKEFILE_NAME-eng" || lunch "twrp_$DEVICE_NAME-eng" || lunch "omni_$DEVICE_NAME-eng"
+        # 智能匹配设备树中真实的 lunch 目标
+        LUNCH_TARGET=""
+        if [ -n "$MAKEFILE_NAME" ]; then
+          LUNCH_TARGET="${MAKEFILE_NAME}-eng"
+        else
+          # 自动从 device/samsung/d1x 下的 BoardConfig.mk 或 vendorsetup.sh 寻找目标
+          CANDIDATES=$(grep -r "add_lunch_combo" device/samsung/$DEVICE_NAME/ 2>/dev/null | awk '{print $2}')
+          if [ -z "$CANDIDATES" ]; then
+            # 如果没有，拼凑常见前缀
+            for prefix in lineage crdroid twrp omni fox; do
+              if lunch ${prefix}_${DEVICE_NAME}-eng >/dev/null 2>&1; then
+                LUNCH_TARGET="${prefix}_${DEVICE_NAME}-eng"
+                break
+              fi
+            done
+          else
+            LUNCH_TARGET=$(echo "$CANDIDATES" | head -n 1)
+          fi
+        fi
+        
+        if [ -z "$LUNCH_TARGET" ]; then
+          LUNCH_TARGET="crdroid_${DEVICE_NAME}-eng"
+        fi
+        
+        echo "=== 最终选定的 Lunch 目标: $LUNCH_TARGET ==="
+        lunch "$LUNCH_TARGET" || lunch "twrp_${DEVICE_NAME}-eng" || lunch "omni_${DEVICE_NAME}-eng"
+        
         mka adbd "$BUILD_TARGET"image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
@@ -206,7 +231,7 @@ jobs:
       run: |
         OUT_DIR="out/target/product/$DEVICE_NAME"
         if [ -f "$OUT_DIR/recovery.img" ]; then
-          tar -H ustar -cf "${OUT_DIR}/recovery.tar" -C "${OUT_DIR}" recovery.img
+          tar -H ustar -cf "$OUT_DIR/recovery.tar" -C "$OUT_DIR" recovery.img
           echo "recovery.tar created."
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -221,7 +246,7 @@ jobs:
           workspace/out/target/product/${{ env.DEVICE_NAME }}/OrangeFox*.img
         name: OrangeFox-${{ env.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
-        body: |
+        body: `
           ### Build Output
           * Device: Samsung Galaxy Note10 5G (d1x)
           * Main Tree Branch: ${{ env.DEVICE_TREE_BRANCH }}
