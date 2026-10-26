@@ -6,11 +6,11 @@ on:
       MANIFEST_URL:
         description: 'OrangeFox 源码 Manifest 地址'
         required: true
-        default: 'https://gitlab.com/OrangeFox/manifest'
+        default: 'https://gitlab.com/OrangeFox/Manifest.git'
       MANIFEST_BRANCH:
         description: 'OrangeFox Manifest 分支'
         required: true
-        default: '16.0'
+        default: 'fox_16.0'
       DEVICE_TREE_URL:
         description: 'd1x 设备树地址'
         required: true
@@ -18,7 +18,7 @@ on:
       DEVICE_TREE_BRANCH:
         description: 'd1x 设备树分支'
         required: true
-        default: 'fox_16.0'
+        default: 'crdroid-17.0'
       DEVICE_PATH:
         description: '设备树在源码中的存放路径'
         required: true
@@ -27,6 +27,10 @@ on:
         description: 'Exynos9820 通用设备树地址'
         required: true
         default: 'https://github.com/mcajun87/Rocky7842_android_device_samsung_exynos9820-common'
+      COMMON_TREE_BRANCH:
+        description: '通用设备树分支'
+        required: true
+        default: 'lineage-24.0'
       COMMON_PATH:
         description: '通用设备树存放路径'
         required: true
@@ -38,7 +42,7 @@ on:
       MAKEFILE_NAME:
         description: 'Lunch 目标的 Makefile 前缀'
         required: true
-        default: 'twrp_d1x-bp2a'
+        default: 'twrp_d1x'
       BUILD_TARGET:
         description: '编译目标文件类型'
         required: true
@@ -61,6 +65,7 @@ jobs:
         echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
         echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
         echo "Common Tree URL: ${{ github.event.inputs.COMMON_TREE_URL }}"
+        echo "Common Tree Branch: ${{ github.event.inputs.COMMON_TREE_BRANCH }}"
         echo "Common Path: ${{ github.event.inputs.COMMON_PATH }}"
         echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
         echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
@@ -107,7 +112,7 @@ jobs:
         chmod a+x ~/bin/repo
         sudo ln -sf ~/bin/repo /usr/bin/repo
 
-    - name: Initialize and Sync OrangeFox Source
+    - name: Native Repo Init and Sync OrangeFox Source
       run: |
         mkdir -p workspace
         cd workspace
@@ -115,8 +120,8 @@ jobs:
         git config --global user.name "GitHub Actions"
         git config --global user.email "actions@github.com"
         
-        git clone --depth=1 https://gitlab.com/OrangeFox/sync.git sync_tool
-        ./sync_tool/orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ./
+        repo init -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }} --depth=1
+        repo sync -j$(nproc --all) --force-sync
       id: pwd
 
     - name: Clone Device Tree
@@ -131,65 +136,4 @@ jobs:
         && github.event.inputs.COMMON_PATH != ''
       run: |
         mkdir -p ./${{ github.event.inputs.COMMON_PATH }}
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b lineage-22.1 ./${{ github.event.inputs.COMMON_PATH }} || git clone ${{ github.event.inputs.COMMON_TREE_URL }} ./${{ github.event.inputs.COMMON_PATH }}
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Sync Device Dependencies
-      run: |
-        DEP_FILE=""
-        for candidate in           "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies"           "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies"; do
-          if [ -f "${candidate}" ]; then
-            DEP_FILE="${candidate}"
-            break
-          fi
-        done
-
-        if [ -n "${DEP_FILE}" ]; then
-          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
-            bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "${DEP_FILE}" || true
-          fi
-          repo sync -j$(nproc --all) --force-sync
-        else
-          echo "No dependencies file found."
-        fi
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-      continue-on-error: true
-
-    - name: Build Recovery
-      run: |
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        export FOX_BUILD_DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
-        export LC_ALL=C
-        
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng
-        mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Create Samsung Odin TAR
-      run: |
-        OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        if [ -f "${OUT_DIR}/recovery.img" ]; then
-          tar -H ustar -cf "${OUT_DIR}/recovery.tar" -C "${OUT_DIR}" recovery.img
-          echo "recovery.tar created."
-        fi
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
-
-    - name: Publish Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: | 
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.tar
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/OrangeFox*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/OrangeFox*.img
-        name: OrangeFox-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
-        tag_name: ${{ github.run_id }}
-        body: |
-          ### Build Output
-          * Device: Samsung Galaxy Note10 5G (d1x)
-          * Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          * Target: ${{ github.event.inputs.BUILD_TARGET }}.img
-          * Package: recovery.tar (For Samsung Odin)
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.COMMON_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }} || git clone ${{ github.event.inputs.COMMO
