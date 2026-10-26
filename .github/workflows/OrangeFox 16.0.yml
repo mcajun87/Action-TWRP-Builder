@@ -1,0 +1,286 @@
+name: OrangeFox 16.0 - Samsung Galaxy Note10 5G (d1x)
+
+on:
+  workflow_dispatch:
+    inputs:
+      DEVICE_TREE_URL:
+        description: "Git URL of your d1x device tree that is compatible with OrangeFox 16.0"
+        required: true
+        default: "https://github.com/mcajun87/Rocky7842_android_device_samsung_d1x"
+        type: string
+      DEVICE_TREE_BRANCH:
+        description: "Device-tree branch (must exist in the repository)"
+        required: true
+        default: "fox_16.0"
+        type: string
+      DEVICE_PATH:
+        description: "Device-tree path inside the source tree"
+        required: true
+        default: "device/samsung/d1x"
+        type: string
+      DEVICE_NAME:
+        description: "Device codename used by the lunch product"
+        required: true
+        default: "d1x"
+        type: string
+      RELEASE_NAME:
+        description: "Android release configuration in the OrangeFox 16.0 manifest"
+        required: true
+        default: "bp2a"
+        type: choice
+        options:
+          - bp2a
+          - ap2a
+          - trunk_staging
+          - aosp_current
+          - lineage
+          - omni
+      BUILD_TARGET:
+        description: "Image target"
+        required: true
+        default: "recovery"
+        type: choice
+        options:
+          - recovery
+          - boot
+          - vendorboot
+      MAKE_JOBS:
+        description: "Build parallelism; use 2 or 4 to reduce memory pressure"
+        required: true
+        default: "2"
+        type: choice
+        options:
+          - "2"
+          - "4"
+      MAKE_RECOVERY_TAR:
+        description: "Also package recovery.img into a Samsung Odin TAR (does not validate flashability)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: orangefox16-d1x-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository_owner == github.actor
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    env:
+      FOX_BRANCH: "16.0"
+      FOX_ROOT: ${{ github.workspace }}/OrangeFox
+      DEVICE_TREE_URL: ${{ inputs.DEVICE_TREE_URL }}
+      DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+      DEVICE_PATH: ${{ inputs.DEVICE_PATH }}
+      DEVICE_NAME: ${{ inputs.DEVICE_NAME }}
+      RELEASE_NAME: ${{ inputs.RELEASE_NAME }}
+      BUILD_TARGET: ${{ inputs.BUILD_TARGET }}
+      MAKE_JOBS: ${{ inputs.MAKE_JOBS }}
+
+    steps:
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      - name: Maximize Free Disk Space
+        shell: bash
+        run: |
+          echo "=== 正在清理服务器无用软件，释放 30GB+ 磁盘空间 ==="
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/powershell
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Show selected configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "OrangeFox manifest branch: ${FOX_BRANCH}"
+          echo "Device tree: ${DEVICE_TREE_URL}"
+          echo "Device tree branch: ${DEVICE_TREE_BRANCH}"
+          echo "Device path: ${DEVICE_PATH}"
+          echo "Device codename: ${DEVICE_NAME}"
+          echo "Release configuration: ${RELEASE_NAME}"
+          echo "Build target: ${BUILD_TARGET}image"
+          echo "Parallel jobs: ${MAKE_JOBS}"
+
+      - name: Set swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 24
+
+      - name: Install OrangeFox build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git git-lfs curl ca-certificates python3 rsync build-essential bc bison flex libssl-dev libncurses5-dev zlib1g-dev
+          git lfs install
+          echo "Build environment setup completed successfully."
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${HOME}/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "${HOME}/bin/repo"
+          chmod +x "${HOME}/bin/repo"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+
+      - name: Sync OrangeFox 16.0 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${FOX_ROOT}"
+          cd "${FOX_ROOT}"
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git clone --depth=1 https://gitlab.com/OrangeFox/sync.git "${RUNNER_TEMP}/orangefox-sync"
+          cd "${RUNNER_TEMP}/orangefox-sync"
+          ./orangefox_sync.sh --branch "${FOX_BRANCH}" --path "${FOX_ROOT}/fox_${FOX_BRANCH}"
+          test -f "${FOX_ROOT}/fox_${FOX_BRANCH}/build/envsetup.sh"
+
+      - name: Validate and clone device tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="${FOX_ROOT}/fox_${FOX_BRANCH}"
+          mkdir -p "$(dirname "${SRC}/${DEVICE_PATH}")"
+
+          git ls-remote --exit-code --heads "${DEVICE_TREE_URL}" "${DEVICE_TREE_BRANCH}" >/dev/null
+
+          if [ -e "${SRC}/${DEVICE_PATH}" ]; then
+            echo "ERROR: ${DEVICE_PATH} already exists in the synced manifest."
+            exit 1
+          fi
+
+          git clone --depth=1 --single-branch --branch "${DEVICE_TREE_BRANCH}"             "${DEVICE_TREE_URL}" "${SRC}/${DEVICE_PATH}"
+
+          echo "Device-tree commit:"
+          git -C "${SRC}/${DEVICE_PATH}" rev-parse HEAD
+
+          if ! find "${SRC}/${DEVICE_PATH}" -maxdepth 2               \( -name "twrp_${DEVICE_NAME}.mk" -o -name "twrp_${DEVICE_NAME}-*.mk" \)               -print -quit | grep -q .; then
+            echo "ERROR: no twrp_${DEVICE_NAME}.mk or twrp_${DEVICE_NAME}-*.mk found."
+            exit 1
+          fi
+
+      - name: Sync device-tree dependencies when defined
+        shell: bash
+        working-directory: ${{ env.FOX_ROOT }}/fox_${{ env.FOX_BRANCH }}
+        continue-on-error: false
+        run: |
+          set -euo pipefail
+          DEP_FILE=""
+          for candidate in             "${DEVICE_PATH}/twrp.dependencies"             "${DEVICE_PATH}/omni.dependencies"; do
+            if [ -f "${candidate}" ]; then
+              DEP_FILE="${candidate}"
+              break
+            fi
+          done
+
+          if [ -n "${DEP_FILE}" ]; then
+            if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
+              bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "${DEP_FILE}" || true
+            fi
+            repo sync -c --force-sync -j2
+          else
+            echo "No twrp.dependencies or omni.dependencies file found; skipping dependency conversion."
+          fi
+
+      - name: Build OrangeFox recovery
+        shell: bash
+        working-directory: ${{ env.FOX_ROOT }}/fox_${{ env.FOX_BRANCH }}
+        run: |
+          set -euo pipefail
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export FOX_BUILD_DEVICE="${DEVICE_NAME}"
+          export LC_ALL=C
+          source build/envsetup.sh
+
+          LUNCH_TARGET="twrp_${DEVICE_NAME}-${RELEASE_NAME}-eng"
+          echo "Using lunch target: ${LUNCH_TARGET}"
+          lunch "${LUNCH_TARGET}"
+
+          mka adbd "${BUILD_TARGET}image" -j"${MAKE_JOBS}"
+
+      - name: Verify output and calculate checksum
+        id: output
+        shell: bash
+        working-directory: ${{ env.FOX_ROOT }}/fox_${{ env.FOX_BRANCH }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="out/target/product/${DEVICE_NAME}"
+          test -d "${OUT_DIR}"
+
+          mkdir -p "${GITHUB_WORKSPACE}/release-files"
+          FOUND=0
+          for f in             "${OUT_DIR}/${BUILD_TARGET}.img"             "${OUT_DIR}"/OrangeFox*.img; do
+            if [ -f "${f}" ]; then
+              cp -v "${f}" "${GITHUB_WORKSPACE}/release-files/"
+              FOUND=1
+            fi
+          done
+          if [ "${FOUND}" -ne 1 ]; then
+            echo "ERROR: no recovery image was found in ${OUT_DIR}"
+            find "${OUT_DIR}" -maxdepth 2 -type f -printf '%p (%s bytes)
+' || true
+            exit 1
+          fi
+
+          find "${GITHUB_WORKSPACE}/release-files" -maxdepth 1 -type f -print0             | xargs -0 sha256sum | tee "${GITHUB_WORKSPACE}/release-files/SHA256SUMS.txt"
+
+          echo "out_dir=${OUT_DIR}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create Samsung Odin TAR (optional)
+        if: ${{ inputs.MAKE_RECOVERY_TAR }}
+        shell: bash
+        working-directory: ${{ env.FOX_ROOT }}/fox_${{ env.FOX_BRANCH }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="out/target/product/${DEVICE_NAME}"
+          IMG="${OUT_DIR}/${BUILD_TARGET}.img"
+
+          if [ "${BUILD_TARGET}" != "recovery" ]; then
+            echo "ERROR: Odin recovery TAR is only offered for BUILD_TARGET=recovery."
+            exit 1
+          fi
+          if [ ! -f "${IMG}" ]; then
+            echo "ERROR: ${IMG} not found. Check the device tree's actual output filename."
+            exit 1
+          fi
+
+          tar -H ustar -cf "${GITHUB_WORKSPACE}/release-files/recovery.tar" -C "${OUT_DIR}" recovery.img
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeFox-16.0-d1x-${{ github.run_number }}
+          path: release-files/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: OrangeFox-16.0-d1x-${{ github.run_number }}
+          name: OrangeFox 16.0 - d1x - build ${{ github.run_number }}
+          body: |
+            Automated build artifact for Samsung Galaxy Note10 5G (SM-N971N / d1x).
+
+            OrangeFox manifest branch: 16.0
+            Device-tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}
+            Device path: ${{ inputs.DEVICE_PATH }}
+            Lunch configuration: twrp_${{ inputs.DEVICE_NAME }}-${{ inputs.RELEASE_NAME }}-eng
+            Build target: ${{ inputs.BUILD_TARGET }}image
+          files: release-files/*
+          fail_on_unmatched_files: true
