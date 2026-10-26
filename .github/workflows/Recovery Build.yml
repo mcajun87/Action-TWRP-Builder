@@ -6,11 +6,11 @@ on:
       MANIFEST_URL:
         description: 'OrangeFox 源码 Manifest 地址'
         required: true
-        default: 'https://gitlab.com/OrangeFox/manifest'
+        default: 'https://gitlab.com/OrangeFox/Manifest.git'
       MANIFEST_BRANCH:
         description: 'OrangeFox Manifest 分支'
         required: true
-        default: '16.0'
+        default: 'fox_16.0'
       DEVICE_TREE_URL:
         description: 'd1x 设备树地址'
         required: true
@@ -55,21 +55,34 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      MANIFEST_URL: ${{ github.event.inputs.MANIFEST_URL }}
+      MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH }}
+      DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL }}
+      DEVICE_TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+      DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH }}
+      COMMON_TREE_URL: ${{ github.event.inputs.COMMON_TREE_URL }}
+      COMMON_TREE_BRANCH: ${{ github.event.inputs.COMMON_TREE_BRANCH }}
+      COMMON_PATH: ${{ github.event.inputs.COMMON_PATH }}
+      DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME }}
+      MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME }}
+      BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET }}
+
     steps:
     - name: Display Run Parameters
       run: |
         echo "::group::User Parameters"
-        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
-        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
-        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
-        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
-        echo "Common Tree URL: ${{ github.event.inputs.COMMON_TREE_URL }}"
-        echo "Common Tree Branch: ${{ github.event.inputs.COMMON_TREE_BRANCH }}"
-        echo "Common Path: ${{ github.event.inputs.COMMON_PATH }}"
-        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "Manifest URL: $MANIFEST_URL"
+        echo "Manifest Branch: $MANIFEST_BRANCH"
+        echo "Device Tree URL: $DEVICE_TREE_URL"
+        echo "Device Tree Branch: $DEVICE_TREE_BRANCH"
+        echo "Device Path: $DEVICE_PATH"
+        echo "Common Tree URL: $COMMON_TREE_URL"
+        echo "Common Tree Branch: $COMMON_TREE_BRANCH"
+        echo "Common Path: $COMMON_PATH"
+        echo "Device Name: $DEVICE_NAME"
+        echo "Makefile Name: $MAKEFILE_NAME"
+        echo "Build Target: $BUILD_TARGET.img"
         echo "::endgroup::"
 
     - name: Checkout repository
@@ -83,7 +96,7 @@ jobs:
         sudo rm -rf /opt/ghc
         sudo rm -rf /usr/local/share/boost
         sudo rm -rf /usr/share/swift
-        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/hostedtoolcache/CodeQL
         sudo rm -rf /usr/local/share/powershell
         sudo docker image prune --all --force || true
         df -h
@@ -112,7 +125,7 @@ jobs:
         chmod a+x ~/bin/repo
         sudo ln -sf ~/bin/repo /usr/bin/repo
 
-    - name: Initialize and Sync OrangeFox Source
+    - name: Native Repo Init and Robust Sync OrangeFox Source
       run: |
         mkdir -p workspace
         cd workspace
@@ -120,40 +133,54 @@ jobs:
         git config --global user.name "GitHub Actions"
         git config --global user.email "actions@github.com"
         
-        git clone --depth=1 https://gitlab.com/OrangeFox/sync.git sync_tool
-        ./sync_tool/orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ./
+        echo "=== 正在初始化 Manifest ($MANIFEST_BRANCH) ==="
+        repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" --depth=1
+        
+        echo "=== 开始同步源码 (带自动重试机制) ==="
+        for i in {1..3}; do
+          echo "第 $次 同步尝试..."
+          if repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags; then
+            echo "源码同步成功！"
+            break
+          else
+            echo "同步遇到网络波动，准备重试..."
+            sleep 5
+          fi
+        done
+        
+        # 严格检查核心文件是否存在
+        if [ ! -f "build/envsetup.sh" ]; then
+          echo "ERROR: 多次同步后仍未找到 build/envsetup.sh，同步彻底失败！"
+          exit 1
+        fi
       id: pwd
 
     - name: Clone Device Tree
       run: |
-        mkdir -p ./${{ github.event.inputs.DEVICE_PATH }}
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+        mkdir -p "./$DEVICE_PATH"
+        git clone "$DEVICE_TREE_URL" -b "$DEVICE_TREE_BRANCH" "./$DEVICE_PATH"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Clone Common Tree
-      if: |
-        github.event.inputs.COMMON_TREE_URL != ''
-        && github.event.inputs.COMMON_PATH != ''
+      if: "${{ env.COMMON_TREE_URL != '' && env.COMMON_PATH != '' }}"
       run: |
-        mkdir -p ./${{ github.event.inputs.COMMON_PATH }}
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.COMMON_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }} || git clone ${{ github.event.inputs.COMMON_TREE_URL }} ./${{ github.event.inputs.COMMON_PATH }}
+        mkdir -p "./$COMMON_PATH"
+        git clone "$COMMON_TREE_URL" -b "$COMMON_TREE_BRANCH" "./$COMMON_PATH" || git clone "$COMMON_TREE_URL" "./$COMMON_PATH"
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Sync Device Dependencies
       run: |
         DEP_FILE=""
-        for candidate in \
-          "${{ github.event.inputs.DEVICE_PATH }}/twrp.dependencies" \
-          "${{ github.event.inputs.DEVICE_PATH }}/omni.dependencies"; do
-          if [ -f "${candidate}" ]; then
-            DEP_FILE="${candidate}"
+        for candidate in "$DEVICE_PATH/twrp.dependencies" "$DEVICE_PATH/omni.dependencies"; do
+          if [ -f "$candidate" ]; then
+            DEP_FILE="$candidate"
             break
           fi
         done
 
-        if [ -n "${DEP_FILE}" ]; then
-          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
-            bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "${DEP_FILE}" || true
+        if [ -n "$DEP_FILE" ]; then
+          if [ -f "$GITHUB_WORKSPACE/scripts/convert.sh" ]; then
+            bash "$GITHUB_WORKSPACE/scripts/convert.sh" "$DEP_FILE" || true
           fi
           repo sync -j$(nproc --all) --force-sync
         else
@@ -164,26 +191,21 @@ jobs:
 
     - name: Clean Conflicting Devices and Build Recovery
       run: |
-        # 1. 强制清除冲突的其他机型 vendorsetup (如 xiaomi 等)
         find device/ -maxdepth 2 -mindepth 2 -not -path "device/samsung*" -exec rm -rf {} + || true
         
-        # 2. 载入环境
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        export FOX_BUILD_DEVICE="${{ github.event.inputs.DEVICE_NAME }}"
+        export FOX_BUILD_DEVICE="$DEVICE_NAME"
         export LC_ALL=C
         
-        # 3. 尝试匹配正确的 lunch 目标
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng || lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng || lunch omni_${{ github.event.inputs.DEVICE_NAME }}-eng
-        
-        # 4. 开始编译
-        mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+        lunch "$MAKEFILE_NAME-eng" || lunch "twrp_$DEVICE_NAME-eng" || lunch "omni_$DEVICE_NAME-eng"
+        mka adbd "$BUILD_TARGET"image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Create Samsung Odin TAR
       run: |
-        OUT_DIR="out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
-        if [ -f "${OUT_DIR}/recovery.img" ]; then
+        OUT_DIR="out/target/product/$DEVICE_NAME"
+        if [ -f "$OUT_DIR/recovery.img" ]; then
           tar -H ustar -cf "${OUT_DIR}/recovery.tar" -C "${OUT_DIR}" recovery.img
           echo "recovery.tar created."
         fi
@@ -193,17 +215,18 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: | 
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.tar
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/OrangeFox*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/OrangeFox*.img
-        name: OrangeFox-${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/${{ env.BUILD_TARGET }}.img
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.tar
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/OrangeFox*.zip
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/OrangeFox*.img
+        name: OrangeFox-${{ env.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
           ### Build Output
           * Device: Samsung Galaxy Note10 5G (d1x)
-          * Main Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
-          * Common Tree Branch: ${{ github.event.inputs.COMMON_TREE_BRANCH }}
-          * Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          * Main Tree Branch: ${{ env.DEVICE_TREE_BRANCH }}
+          * Common Tree Branch: ${{ env.COMMON_TREE_BRANCH }}
+          * Manifest Branch: ${{ env.MANIFEST_BRANCH }}
+          * Target: ${{ env.BUILD_TARGET }}.img
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
