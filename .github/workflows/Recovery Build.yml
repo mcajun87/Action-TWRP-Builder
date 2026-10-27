@@ -1,4 +1,4 @@
-name:构建 Recovery (d1x - Samsung Note10 5G)
+name: 构建Build OrangeFox Recovery (d1x)
 
 on:
   workflow_dispatch:
@@ -178,8 +178,8 @@ jobs:
         done
 
         if [ -n "${DEP_FILE}" ]; then
-          if [ -f "${GITHUB_WORKSPACE}/scripts/convert.sh" ]; then
-            bash "${GITHUB_WORKSPACE}/scripts/convert.sh" "${DEP_FILE}" || true
+          if [ -f "$GITHUB_WORKSPACE/scripts/convert.sh" ]; then
+            bash "$GITHUB_WORKSPACE/scripts/convert.sh" "${DEP_FILE}" || true
           fi
           repo sync -j$(nproc --all) --force-sync
         else
@@ -197,15 +197,12 @@ jobs:
         export FOX_BUILD_DEVICE="$DEVICE_NAME"
         export LC_ALL=C
         
-        # 智能匹配设备树中真实的 lunch 目标
         LUNCH_TARGET=""
         if [ -n "$MAKEFILE_NAME" ]; then
           LUNCH_TARGET="${MAKEFILE_NAME}-eng"
         else
-          # 自动从 device/samsung/d1x 下的 BoardConfig.mk 或 vendorsetup.sh 寻找目标
           CANDIDATES=$(grep -r "add_lunch_combo" device/samsung/$DEVICE_NAME/ 2>/dev/null | awk '{print $2}')
           if [ -z "$CANDIDATES" ]; then
-            # 如果没有，拼凑常见前缀
             for prefix in lineage crdroid twrp omni fox; do
               if lunch ${prefix}_${DEVICE_NAME}-eng >/dev/null 2>&1; then
                 LUNCH_TARGET="${prefix}_${DEVICE_NAME}-eng"
@@ -246,7 +243,7 @@ jobs:
           workspace/out/target/product/${{ env.DEVICE_NAME }}/OrangeFox*.img
         name: OrangeFox-${{ env.DEVICE_NAME }}-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
-        body: `
+        body: |
           ### Build Output
           * Device: Samsung Galaxy Note10 5G (d1x)
           * Main Tree Branch: ${{ env.DEVICE_TREE_BRANCH }}
