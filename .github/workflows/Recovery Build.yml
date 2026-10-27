@@ -158,21 +158,11 @@ jobs:
         export FOX_BUILD_DEVICE="$DEVICE_NAME"
         export LC_ALL=C
         
-        # 自动扫描并匹配合法的 lunch 目标
-        LUNCH_TARGET=""
-        for prefix in lineage crdroid twrp omni fox; do
-          if lunch ${prefix}_${DEVICE_NAME}-eng >/dev/null 2>&1; then
-            LUNCH_TARGET="${prefix}_${DEVICE_NAME}-eng"
-            break
-          fi
-        done
-        
-        if [ -z "$LUNCH_TARGET" ]; then
-          LUNCH_TARGET="crdroid_${DEVICE_NAME}-eng"
-        fi
+        # 直接指定从 AndroidProducts.mk 中解析出来的正确目标
+        LUNCH_TARGET="lineage_d1x-eng"
         
         echo "=== 最终确认的 Lunch 目标: $LUNCH_TARGET ==="
-        lunch "$LUNCH_TARGET" || lunch "twrp_${DEVICE_NAME}-eng" || lunch "omni_${DEVICE_NAME}-eng"
+        lunch "$LUNCH_TARGET"
         
         mka adbd "$BUILD_TARGET"image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
