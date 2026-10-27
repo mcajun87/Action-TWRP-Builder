@@ -14,7 +14,7 @@ on:
       DEVICE_TREE_URL:
         description: 'd1x 设备树地址'
         required: true
-        default: 'https://github.com/mcajun87/Rocky7842_android_device_samsung_d1x'
+        default: 'https://github.com/mcajun87/Rocky7842_android_device_samsung_d1x_TWRP'
       DEVICE_TREE_BRANCH:
         description: 'd1x 设备树分支'
         required: true
