@@ -1,4 +1,4 @@
-name:构建Build OrangeFox Recovery (d1x)
+name: 构建Build OrangeFox Recovery (d1x)
 
 on:
   workflow_dispatch:
