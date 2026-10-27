@@ -40,7 +40,7 @@ on:
         required: true
         default: 'd1x'
       MAKEFILE_NAME:
-        description: 'Lunch 目标的 Makefile 前缀 (可留空自动识别)'
+        description: '指定的 Lunch 目标 (如不确定请留空)'
         required: false
         default: ''
       BUILD_TARGET:
@@ -197,29 +197,44 @@ jobs:
         export FOX_BUILD_DEVICE="$DEVICE_NAME"
         export LC_ALL=C
         
-        LUNCH_TARGET=""
+        echo "=== 正在自动扫描设备树中定义的 Lunch 目标 ==="
+        # 扫描 device/samsung/d1x 下的 AndroidProducts.mk
+        AUTO_LUNCH=""
+        if [ -f "device/samsung/$DEVICE_NAME/AndroidProducts.mk" ]; then
+          AUTO_LUNCH=$(grep -oP '(?<=products := ).*' device/samsung/$DEVICE_NAME/AndroidProducts.mk || true)
+        fi
+        
+        if [ -z "$AUTO_LUNCH" ]; then
+          # 尝试从 vendorsetup.sh 提取
+          AUTO_LUNCH=$(grep -r "add_lunch_combo" device/samsung/$DEVICE_NAME/ 2>/dev/null | head -n 1 | awk '{print $2}')
+        fi
+        
         if [ -n "$MAKEFILE_NAME" ]; then
           LUNCH_TARGET="${MAKEFILE_NAME}-eng"
+        elif [ -n "$AUTO_LUNCH" ]; then
+          LUNCH_TARGET="$AUTO_LUNCH"
         else
-          CANDIDATES=$(grep -r "add_lunch_combo" device/samsung/$DEVICE_NAME/ 2>/dev/null | awk '{print $2}')
-          if [ -z "$CANDIDATES" ]; then
-            for prefix in lineage crdroid twrp omni fox; do
-              if lunch ${prefix}_${DEVICE_NAME}-eng >/dev/null 2>&1; then
-                LUNCH_TARGET="${prefix}_${DEVICE_NAME}-eng"
-                break
-              fi
-            done
-          else
-            LUNCH_TARGET=$(echo "$CANDIDATES" | head -n 1)
-          fi
+          # 如果都没扫到，列出所有可用的combo并尝试匹配包含 d1x 的项
+          LUNCH_TARGET=$(python3 -c "
+import subprocess
+res = subprocess.run(['bash', '-c', 'source build/envsetup.sh && print_lunch_menu'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+for line in res.stdout.splitlines():
+    if '$DEVICE_NAME' in line:
+        # 提取类似 twrp_d1x-eng 或 crdroid_d1x-eng 的项
+        parts = line.strip().split()
+        for p in parts:
+            if '$DEVICE_NAME' in p:
+                print(p)
+                exit(0)
+")
         fi
         
         if [ -z "$LUNCH_TARGET" ]; then
-          LUNCH_TARGET="crdroid_${DEVICE_NAME}-eng"
+          LUNCH_TARGET="twrp_${DEVICE_NAME}-eng"
         fi
         
-        echo "=== 最终选定的 Lunch 目标: $LUNCH_TARGET ==="
-        lunch "$LUNCH_TARGET" || lunch "twrp_${DEVICE_NAME}-eng" || lunch "omni_${DEVICE_NAME}-eng"
+        echo "=== 最终确认的 Lunch 目标: $LUNCH_TARGET ==="
+        lunch "$LUNCH_TARGET" || lunch "crdroid_${DEVICE_NAME}-eng" || lunch "omni_${DEVICE_NAME}-eng" || lunch "lineage_${DEVICE_NAME}-eng"
         
         mka adbd "$BUILD_TARGET"image -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
